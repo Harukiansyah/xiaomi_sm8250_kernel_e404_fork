@@ -9,7 +9,7 @@ on:
       kernel_branch:
         description: "Branch to build"
         required: true
-        default: "staging-bpf"
+        default: "stable"
 
 jobs:
   build:
