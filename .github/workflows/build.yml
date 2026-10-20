@@ -46,6 +46,8 @@ jobs:
             curl \
             flex \
             git \
+            dwarves \
+            libelf-dev \
             libssl-dev \
             lld \
             python3 \
