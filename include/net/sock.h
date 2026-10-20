@@ -446,8 +446,8 @@ struct sock {
 	struct timer_list	sk_timer;
 	__u32			sk_priority;
 	__u32			sk_mark;
-	unsigned long		sk_pacing_rate; /* bytes per second */
-	unsigned long		sk_max_pacing_rate;
+	u32			sk_pacing_rate; /* bytes per second */
+	u32			sk_max_pacing_rate;
 	struct page_frag	sk_frag;
 	netdev_features_t	sk_route_caps;
 	netdev_features_t	sk_route_nocaps;
@@ -960,7 +960,7 @@ static inline int sk_stream_min_wspace(const struct sock *sk)
 
 static inline int sk_stream_wspace(const struct sock *sk)
 {
-	return READ_ONCE(sk->sk_sndbuf) - sk->sk_wmem_queued;
+	return sk->sk_sndbuf - sk->sk_wmem_queued;
 }
 
 void sk_stream_write_space(struct sock *sk);
@@ -1284,7 +1284,7 @@ static inline void sk_refcnt_debug_release(const struct sock *sk)
 
 static inline bool sk_stream_memory_free(const struct sock *sk)
 {
-	if (sk->sk_wmem_queued >= READ_ONCE(sk->sk_sndbuf))
+	if (sk->sk_wmem_queued >= sk->sk_sndbuf)
 		return false;
 
 	return sk->sk_prot->stream_memory_free ?
@@ -1627,13 +1627,6 @@ static inline void sock_owned_by_me(const struct sock *sk)
 {
 #ifdef CONFIG_LOCKDEP
 	WARN_ON_ONCE(!lockdep_sock_is_held(sk) && debug_locks);
-#endif
-}
-
-static inline void sock_not_owned_by_me(const struct sock *sk)
-{
-#ifdef CONFIG_LOCKDEP
-	WARN_ON_ONCE(lockdep_sock_is_held(sk) && debug_locks);
 #endif
 }
 
@@ -2211,8 +2204,6 @@ void sk_reset_timer(struct sock *sk, struct timer_list *timer,
 
 void sk_stop_timer(struct sock *sk, struct timer_list *timer);
 
-void sk_stop_timer_sync(struct sock *sk, struct timer_list *timer);
-
 int __sk_queue_drop_skb(struct sock *sk, struct sk_buff_head *sk_queue,
 			struct sk_buff *skb, unsigned int flags,
 			void (*destructor)(struct sock *sk,
@@ -2291,14 +2282,10 @@ static inline void sk_wake_async(const struct sock *sk, int how, int band)
 
 static inline void sk_stream_moderate_sndbuf(struct sock *sk)
 {
-	u32 val;
-
-	if (sk->sk_userlocks & SOCK_SNDBUF_LOCK)
-		return;
-
-	val = min(sk->sk_sndbuf, sk->sk_wmem_queued >> 1);
-
-	WRITE_ONCE(sk->sk_sndbuf, max_t(u32, val, SOCK_MIN_SNDBUF));
+	if (!(sk->sk_userlocks & SOCK_SNDBUF_LOCK)) {
+		sk->sk_sndbuf = min(sk->sk_sndbuf, sk->sk_wmem_queued >> 1);
+		sk->sk_sndbuf = max_t(u32, sk->sk_sndbuf, SOCK_MIN_SNDBUF);
+	}
 }
 
 struct sk_buff *sk_stream_alloc_skb(struct sock *sk, int size, gfp_t gfp,
@@ -2331,7 +2318,7 @@ bool sk_page_frag_refill(struct sock *sk, struct page_frag *pfrag);
  */
 static inline bool sock_writeable(const struct sock *sk)
 {
-	return refcount_read(&sk->sk_wmem_alloc) < (READ_ONCE(sk->sk_sndbuf) >> 1);
+	return refcount_read(&sk->sk_wmem_alloc) < (sk->sk_sndbuf >> 1);
 }
 
 static inline gfp_t gfp_any(void)
@@ -2351,9 +2338,7 @@ static inline long sock_sndtimeo(const struct sock *sk, bool noblock)
 
 static inline int sock_rcvlowat(const struct sock *sk, int waitall, int len)
 {
-	int v = waitall ? len : min_t(int, READ_ONCE(sk->sk_rcvlowat), len);
-
-	return v ?: 1;
+	return (waitall ? len : min_t(int, sk->sk_rcvlowat, len)) ? : 1;
 }
 
 /* Alas, with timeout socket operations are not restartable.

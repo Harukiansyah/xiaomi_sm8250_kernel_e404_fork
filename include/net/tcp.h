@@ -796,7 +796,17 @@ static inline u32 tcp_time_stamp_raw(void)
 	return div_u64(tcp_clock_ns(), NSEC_PER_SEC / TCP_TS_HZ);
 }
 
-void tcp_mstamp_refresh(struct tcp_sock *tp);
+
+/* Refresh 1us clock of a TCP socket,
+ * ensuring monotically increasing values.
+ */
+static inline void tcp_mstamp_refresh(struct tcp_sock *tp)
+{
+	u64 val = tcp_clock_us();
+
+	if (val > tp->tcp_mstamp)
+		tp->tcp_mstamp = val;
+}
 
 static inline u32 tcp_stamp_us_delta(u64 t1, u64 t0)
 {
@@ -805,13 +815,7 @@ static inline u32 tcp_stamp_us_delta(u64 t1, u64 t0)
 
 static inline u32 tcp_skb_timestamp(const struct sk_buff *skb)
 {
-	return div_u64(skb->skb_mstamp_ns, NSEC_PER_SEC / TCP_TS_HZ);
-}
-
-/* provide the departure time in us unit */
-static inline u64 tcp_skb_timestamp_us(const struct sk_buff *skb)
-{
-	return div_u64(skb->skb_mstamp_ns, NSEC_PER_USEC);
+	return div_u64(skb->skb_mstamp, USEC_PER_SEC / TCP_TS_HZ);
 }
 
 #define tcp_flag_byte(th) (((u_int8_t *)th)[13])
@@ -856,7 +860,7 @@ struct tcp_skb_cb {
 #define TCPCB_SACKED_RETRANS	0x02	/* SKB retransmitted		*/
 #define TCPCB_LOST		0x04	/* SKB is lost			*/
 #define TCPCB_TAGBITS		0x07	/* All tag bits			*/
-#define TCPCB_REPAIRED		0x10	/* SKB repaired (no skb_mstamp_ns)	*/
+#define TCPCB_REPAIRED		0x10	/* SKB repaired (no skb_mstamp)	*/
 #define TCPCB_EVER_RETRANS	0x80	/* Ever retransmitted frame	*/
 #define TCPCB_RETRANS		(TCPCB_SACKED_RETRANS|TCPCB_EVER_RETRANS| \
 				TCPCB_REPAIRED)
@@ -1410,14 +1414,13 @@ static inline int tcp_win_from_space(const struct sock *sk, int space)
 /* Note: caller must be prepared to deal with negative returns */
 static inline int tcp_space(const struct sock *sk)
 {
-	return tcp_win_from_space(sk, READ_ONCE(sk->sk_rcvbuf) -
-				  READ_ONCE(sk->sk_backlog.len) -
+	return tcp_win_from_space(sk, sk->sk_rcvbuf - sk->sk_backlog.len -
 				  atomic_read(&sk->sk_rmem_alloc));
 }
 
 static inline int tcp_full_space(const struct sock *sk)
 {
-	return tcp_win_from_space(sk, READ_ONCE(sk->sk_rcvbuf));
+	return tcp_win_from_space(sk, sk->sk_rcvbuf);
 }
 
 /* We provision sk_rcvbuf around 200% of sk_rcvlowat.
@@ -2030,7 +2033,7 @@ static inline s64 tcp_rto_delta_us(const struct sock *sk)
 {
 	const struct sk_buff *skb = tcp_rtx_queue_head(sk);
 	u32 rto = inet_csk(sk)->icsk_rto;
-	u64 rto_time_stamp_us = tcp_skb_timestamp_us(skb) + jiffies_to_usecs(rto);
+	u64 rto_time_stamp_us = skb->skb_mstamp + jiffies_to_usecs(rto);
 
 	return rto_time_stamp_us - tcp_sk(sk)->tcp_mstamp;
 }

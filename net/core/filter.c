@@ -4776,23 +4776,16 @@ static int _bpf_setsockopt(struct sock *sk, int level, int optname,
 			val = min_t(u32, val, sysctl_rmem_max);
 			val = min_t(int, val, INT_MAX / 2);
 			sk->sk_userlocks |= SOCK_RCVBUF_LOCK;
-			WRITE_ONCE(sk->sk_rcvbuf,
-				   max_t(int, val * 2, SOCK_MIN_RCVBUF));
+			sk->sk_rcvbuf = max_t(int, val * 2, SOCK_MIN_RCVBUF);
 			break;
 		case SO_SNDBUF:
 			val = min_t(u32, val, sysctl_wmem_max);
 			val = min_t(int, val, INT_MAX / 2);
 			sk->sk_userlocks |= SOCK_SNDBUF_LOCK;
-			WRITE_ONCE(sk->sk_sndbuf,
-				   max_t(int, val * 2, SOCK_MIN_SNDBUF));
+			sk->sk_sndbuf = max_t(int, val * 2, SOCK_MIN_SNDBUF);
 			break;
-		case SO_MAX_PACING_RATE: /* 32bit version */
-			if (val != ~0U)
-				cmpxchg(&sk->sk_pacing_status,
-					SK_PACING_NONE,
-					SK_PACING_NEEDED);
-			sk->sk_max_pacing_rate = (val == ~0U) ?
-						 ~0UL : (unsigned int)val;
+		case SO_MAX_PACING_RATE:
+			sk->sk_max_pacing_rate = val;
 			sk->sk_pacing_rate = min(sk->sk_pacing_rate,
 						 sk->sk_max_pacing_rate);
 			break;
@@ -4802,7 +4795,7 @@ static int _bpf_setsockopt(struct sock *sk, int level, int optname,
 		case SO_RCVLOWAT:
 			if (val < 0)
 				val = INT_MAX;
-			WRITE_ONCE(sk->sk_rcvlowat, val ? : 1);
+			sk->sk_rcvlowat = val ? : 1;
 			break;
 		case SO_MARK:
 			if (sk->sk_mark != val) {

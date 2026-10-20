@@ -423,8 +423,7 @@ static void tcp_sndbuf_expand(struct sock *sk)
 	sndmem *= nr_segs * per_mss;
 
 	if (sk->sk_sndbuf < sndmem)
-		WRITE_ONCE(sk->sk_sndbuf,
-			   min(sndmem, sock_net(sk)->ipv4.sysctl_tcp_wmem[2]));
+		sk->sk_sndbuf = min(sndmem, sock_net(sk)->ipv4.sysctl_tcp_wmem[2]);
 }
 
 /* 2. Tuning advertised window (window_clamp, rcv_ssthresh)
@@ -549,9 +548,8 @@ static void tcp_clamp_window(struct sock *sk)
 	    !(sk->sk_userlocks & SOCK_RCVBUF_LOCK) &&
 	    !tcp_under_memory_pressure(sk) &&
 	    sk_memory_allocated(sk) < sk_prot_mem_limits(sk, 0)) {
-		WRITE_ONCE(sk->sk_rcvbuf,
-			   min(atomic_read(&sk->sk_rmem_alloc),
-			       net->ipv4.sysctl_tcp_rmem[2]));
+		sk->sk_rcvbuf = min(atomic_read(&sk->sk_rmem_alloc),
+				    net->ipv4.sysctl_tcp_rmem[2]);
 	}
 	if (atomic_read(&sk->sk_rmem_alloc) > sk->sk_rcvbuf)
 		tp->rcv_ssthresh = min(tp->window_clamp, 2U * tp->advmss);
@@ -590,12 +588,10 @@ EXPORT_SYMBOL(tcp_initialize_rcv_mss);
  */
 static void tcp_rcv_rtt_update(struct tcp_sock *tp, u32 sample, int win_dep)
 {
-	u32 new_sample, old_sample = tp->rcv_rtt_est.rtt_us;
-	long m = sample << 3;
+	u32 new_sample = tp->rcv_rtt_est.rtt_us;
+	long m = sample;
 
-	if (old_sample == 0 || m < old_sample) {
-		new_sample = m;
-	} else {
+	if (new_sample != 0) {
 		/* If we sample in larger samples in the non-timestamp
 		 * case, we could grossly overestimate the RTT especially
 		 * with chatty applications or bulk transfer apps which
@@ -606,9 +602,17 @@ static void tcp_rcv_rtt_update(struct tcp_sock *tp, u32 sample, int win_dep)
 		 * else with timestamps disabled convergence takes too
 		 * long.
 		 */
-		if (win_dep)
-			return;
-		new_sample = old_sample - (old_sample >> 3) + sample;
+		if (!win_dep) {
+			m -= (new_sample >> 3);
+			new_sample += m;
+		} else {
+			m <<= 3;
+			if (m < new_sample)
+				new_sample = m;
+		}
+	} else {
+		/* No previous measure. */
+		new_sample = m << 3;
 	}
 
 	tp->rcv_rtt_est.rtt_us = new_sample;
@@ -709,7 +713,7 @@ void tcp_rcv_space_adjust(struct sock *sk)
 		rcvbuf = min_t(u64, rcvwin * rcvmem,
 			       sock_net(sk)->ipv4.sysctl_tcp_rmem[2]);
 		if (rcvbuf > sk->sk_rcvbuf) {
-			WRITE_ONCE(sk->sk_rcvbuf, rcvbuf);
+			sk->sk_rcvbuf = rcvbuf;
 
 			/* Make the window clamp follow along.  */
 			tp->window_clamp = tcp_win_from_space(sk, rcvbuf);
@@ -1358,7 +1362,7 @@ static bool tcp_shifted_skb(struct sock *sk, struct sk_buff *prev,
 	 */
 	tcp_sacktag_one(sk, state, TCP_SKB_CB(skb)->sacked,
 			start_seq, end_seq, dup_sack, pcount,
-			tcp_skb_timestamp_us(skb));
+			skb->skb_mstamp);
 	tcp_rate_skb_delivered(sk, skb, state->rate);
 
 	if (skb == tp->lost_skb_hint)
@@ -1647,7 +1651,7 @@ static struct sk_buff *tcp_sacktag_walk(struct sk_buff *skb, struct sock *sk,
 						TCP_SKB_CB(skb)->end_seq,
 						dup_sack,
 						tcp_skb_pcount(skb),
-						tcp_skb_timestamp_us(skb));
+						skb->skb_mstamp);
 			tcp_rate_skb_delivered(sk, skb, state->rate);
 			if (TCP_SKB_CB(skb)->sacked & TCPCB_SACKED_ACKED)
 				list_del_init(&skb->tcp_tsorted_anchor);
@@ -2001,16 +2005,8 @@ void tcp_clear_retrans(struct tcp_sock *tp)
 static inline void tcp_init_undo(struct tcp_sock *tp)
 {
 	tp->undo_marker = tp->snd_una;
-
 	/* Retransmission still in flight may cause DSACKs later. */
-	/* First, account for regular retransmits in flight: */
-	tp->undo_retrans = tp->retrans_out;
-	/* Next, account for TLP retransmits in flight: */
-	if (tp->tlp_high_seq && tp->tlp_retrans)
-		tp->undo_retrans++;
-	/* Finally, avoid 0, because undo_retrans==0 means "can undo now": */
-	if (!tp->undo_retrans)
-		tp->undo_retrans = -1;
+	tp->undo_retrans = tp->retrans_out ? : -1;
 }
 
 static bool tcp_is_rack(const struct sock *sk)
@@ -2085,7 +2081,6 @@ void tcp_enter_loss(struct sock *sk)
 				       net->ipv4.sysctl_tcp_reordering);
 	tcp_set_ca_state(sk, TCP_CA_Loss);
 	tp->high_seq = tp->snd_nxt;
-	tp->tlp_high_seq = 0;
 	tcp_ecn_queue_cwr(tp);
 
 	/* F-RTO RFC5682 sec 3.1 step 1: retransmit SND.UNA if no previous
@@ -3186,7 +3181,7 @@ static int tcp_clean_rtx_queue(struct sock *sk, u32 prior_fack,
 				tp->retrans_out -= acked_pcount;
 			flag |= FLAG_RETRANS_DATA_ACKED;
 		} else if (!(sacked & TCPCB_SACKED_ACKED)) {
-			last_ackt = tcp_skb_timestamp_us(skb);
+			last_ackt = skb->skb_mstamp;
 			WARN_ON_ONCE(last_ackt == 0);
 			if (!first_ackt)
 				first_ackt = last_ackt;
@@ -3204,7 +3199,7 @@ static int tcp_clean_rtx_queue(struct sock *sk, u32 prior_fack,
 			tp->delivered += acked_pcount;
 			if (!tcp_skb_spurious_retrans(tp, skb))
 				tcp_rack_advance(tp, sacked, scb->end_seq,
-						 tcp_skb_timestamp_us(skb));
+						 skb->skb_mstamp);
 		}
 		if (sacked & TCPCB_LOST)
 			tp->lost_out -= acked_pcount;
@@ -3299,8 +3294,7 @@ static int tcp_clean_rtx_queue(struct sock *sk, u32 prior_fack,
 			tp->lost_cnt_hint -= min(tp->lost_cnt_hint, delta);
 		}
 	} else if (skb && rtt_update && sack_rtt_us >= 0 &&
-		   sack_rtt_us > tcp_stamp_us_delta(tp->tcp_mstamp,
-						    tcp_skb_timestamp_us(skb))) {
+		   sack_rtt_us > tcp_stamp_us_delta(tp->tcp_mstamp, skb->skb_mstamp)) {
 		/* Do not re-arm RTO if the sack RTT is measured from data sent
 		 * after when the head was last (re)transmitted. Otherwise the
 		 * timeout may continue to extend in loss recovery.

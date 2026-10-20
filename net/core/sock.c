@@ -775,8 +775,7 @@ int sock_setsockopt(struct socket *sock, int level, int optname,
 		val = min_t(u32, val, sysctl_wmem_max);
 set_sndbuf:
 		sk->sk_userlocks |= SOCK_SNDBUF_LOCK;
-		WRITE_ONCE(sk->sk_sndbuf,
-			   max_t(int, val * 2, SOCK_MIN_SNDBUF));
+		sk->sk_sndbuf = max_t(int, val * 2, SOCK_MIN_SNDBUF);
 		/* Wake up sending tasks if we upped the value. */
 		sk->sk_write_space(sk);
 		break;
@@ -812,8 +811,7 @@ set_rcvbuf:
 		 * returning the value we actually used in getsockopt
 		 * is the most desirable behavior.
 		 */
-		WRITE_ONCE(sk->sk_rcvbuf,
-			   max_t(int, val * 2, SOCK_MIN_RCVBUF));
+		sk->sk_rcvbuf = max_t(int, val * 2, SOCK_MIN_RCVBUF);
 		break;
 
 	case SO_RCVBUFFORCE:
@@ -935,7 +933,7 @@ set_rcvbuf:
 		if (sock->ops->set_rcvlowat)
 			ret = sock->ops->set_rcvlowat(sk, val);
 		else
-			WRITE_ONCE(sk->sk_rcvlowat, val ? : 1);
+			sk->sk_rcvlowat = val ? : 1;
 		break;
 
 	case SO_RCVTIMEO:
@@ -1065,8 +1063,9 @@ set_rcvbuf:
 			cmpxchg(&sk->sk_pacing_status,
 				SK_PACING_NONE,
 				SK_PACING_NEEDED);
-		sk->sk_max_pacing_rate = ulval;
-		sk->sk_pacing_rate = min(sk->sk_pacing_rate, ulval);
+		sk->sk_max_pacing_rate = val;
+		sk->sk_pacing_rate = min(sk->sk_pacing_rate,
+					 sk->sk_max_pacing_rate);
 		break;
 		}
 	case SO_INCOMING_CPU:
@@ -1414,8 +1413,7 @@ static int sk_getsockopt(struct sock *sk, int level, int optname,
 #endif
 
 	case SO_MAX_PACING_RATE:
-		/* 32bit version */
-		v.val = min_t(unsigned long, sk->sk_max_pacing_rate, ~0U);
+		v.val = sk->sk_max_pacing_rate;
 		break;
 
 	case SO_INCOMING_CPU:
@@ -2061,10 +2059,8 @@ EXPORT_SYMBOL(sock_i_ino);
 struct sk_buff *sock_wmalloc(struct sock *sk, unsigned long size, int force,
 			     gfp_t priority)
 {
-	if (force ||
-	    refcount_read(&sk->sk_wmem_alloc) < READ_ONCE(sk->sk_sndbuf)) {
+	if (force || refcount_read(&sk->sk_wmem_alloc) < sk->sk_sndbuf) {
 		struct sk_buff *skb = alloc_skb(size, priority);
-
 		if (skb) {
 			skb_set_owner_w(skb, sk);
 			return skb;
@@ -2165,7 +2161,7 @@ static long sock_wait_for_wmem(struct sock *sk, long timeo)
 			break;
 		set_bit(SOCK_NOSPACE, &sk->sk_socket->flags);
 		prepare_to_wait(sk_sleep(sk), &wait, TASK_INTERRUPTIBLE);
-		if (refcount_read(&sk->sk_wmem_alloc) < READ_ONCE(sk->sk_sndbuf))
+		if (refcount_read(&sk->sk_wmem_alloc) < sk->sk_sndbuf)
 			break;
 		if (sk->sk_shutdown & SEND_SHUTDOWN)
 			break;
@@ -2200,7 +2196,7 @@ struct sk_buff *sock_alloc_send_pskb(struct sock *sk, unsigned long header_len,
 		if (sk->sk_shutdown & SEND_SHUTDOWN)
 			goto failure;
 
-		if (sk_wmem_alloc_get(sk) < READ_ONCE(sk->sk_sndbuf))
+		if (sk_wmem_alloc_get(sk) < sk->sk_sndbuf)
 			break;
 
 		sk_set_bit(SOCKWQ_ASYNC_NOSPACE, sk);
@@ -2797,7 +2793,7 @@ static void sock_def_write_space(struct sock *sk)
 	/* Do not wake up a writer until he can make "significant"
 	 * progress.  --DaveM
 	 */
-	if ((refcount_read(&sk->sk_wmem_alloc) << 1) <= READ_ONCE(sk->sk_sndbuf)) {
+	if ((refcount_read(&sk->sk_wmem_alloc) << 1) <= sk->sk_sndbuf) {
 		wq = rcu_dereference(sk->sk_wq);
 		if (skwq_has_sleeper(wq))
 			wake_up_interruptible_sync_poll(&wq->wait, EPOLLOUT |
@@ -2837,13 +2833,6 @@ void sk_stop_timer(struct sock *sk, struct timer_list* timer)
 		__sock_put(sk);
 }
 EXPORT_SYMBOL(sk_stop_timer);
-
-void sk_stop_timer_sync(struct sock *sk, struct timer_list *timer)
-{
-	if (del_timer_sync(timer))
-		__sock_put(sk);
-}
-EXPORT_SYMBOL(sk_stop_timer_sync);
 
 void sock_init_data(struct socket *sock, struct sock *sk)
 {
@@ -2912,8 +2901,8 @@ void sock_init_data(struct socket *sock, struct sock *sk)
 	sk->sk_ll_usec		=	sysctl_net_busy_read;
 #endif
 
-	sk->sk_max_pacing_rate = ~0UL;
-	sk->sk_pacing_rate = ~0UL;
+	sk->sk_max_pacing_rate = ~0U;
+	sk->sk_pacing_rate = ~0U;
 	sk->sk_pacing_shift = 10;
 	sk->sk_incoming_cpu = -1;
 
@@ -3105,8 +3094,7 @@ int sock_common_getsockopt(struct socket *sock, int level, int optname,
 {
 	struct sock *sk = sock->sk;
 
-	/* IPV6_ADDRFORM can change sk->sk_prot under us. */
-	return READ_ONCE(sk->sk_prot)->getsockopt(sk, level, optname, optval, optlen);
+	return sk->sk_prot->getsockopt(sk, level, optname, optval, optlen);
 }
 EXPORT_SYMBOL(sock_common_getsockopt);
 
@@ -3147,8 +3135,7 @@ int sock_common_setsockopt(struct socket *sock, int level, int optname,
 {
 	struct sock *sk = sock->sk;
 
-	/* IPV6_ADDRFORM can change sk->sk_prot under us. */
-	return READ_ONCE(sk->sk_prot)->setsockopt(sk, level, optname, optval, optlen);
+	return sk->sk_prot->setsockopt(sk, level, optname, optval, optlen);
 }
 EXPORT_SYMBOL(sock_common_setsockopt);
 
@@ -3208,9 +3195,9 @@ void sk_get_meminfo(const struct sock *sk, u32 *mem)
 	memset(mem, 0, sizeof(*mem) * SK_MEMINFO_VARS);
 
 	mem[SK_MEMINFO_RMEM_ALLOC] = sk_rmem_alloc_get(sk);
-	mem[SK_MEMINFO_RCVBUF] = READ_ONCE(sk->sk_rcvbuf);
+	mem[SK_MEMINFO_RCVBUF] = sk->sk_rcvbuf;
 	mem[SK_MEMINFO_WMEM_ALLOC] = sk_wmem_alloc_get(sk);
-	mem[SK_MEMINFO_SNDBUF] = READ_ONCE(sk->sk_sndbuf);
+	mem[SK_MEMINFO_SNDBUF] = sk->sk_sndbuf;
 	mem[SK_MEMINFO_FWD_ALLOC] = sk->sk_forward_alloc;
 	mem[SK_MEMINFO_WMEM_QUEUED] = sk->sk_wmem_queued;
 	mem[SK_MEMINFO_OPTMEM] = atomic_read(&sk->sk_omem_alloc);

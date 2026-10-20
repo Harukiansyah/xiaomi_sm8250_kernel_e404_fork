@@ -456,8 +456,8 @@ void tcp_init_sock(struct sock *sk)
 
 	icsk->icsk_sync_mss = tcp_sync_mss;
 
-	WRITE_ONCE(sk->sk_sndbuf, sock_net(sk)->ipv4.sysctl_tcp_wmem[1]);
-	WRITE_ONCE(sk->sk_rcvbuf, sock_net(sk)->ipv4.sysctl_tcp_rmem[1]);
+	sk->sk_sndbuf = sock_net(sk)->ipv4.sysctl_tcp_wmem[1];
+	sk->sk_rcvbuf = sock_net(sk)->ipv4.sysctl_tcp_rmem[1];
 
 	sk_sockets_allocated_inc(sk);
 	sk->sk_route_forced_caps = NETIF_F_GSO;
@@ -726,7 +726,6 @@ static void tcp_push(struct sock *sk, int flags, int mss_now,
 		if (!test_bit(TSQ_THROTTLED, &sk->sk_tsq_flags)) {
 			NET_INC_STATS(sock_net(sk), LINUX_MIB_TCPAUTOCORKING);
 			set_bit(TSQ_THROTTLED, &sk->sk_tsq_flags);
-			smp_mb__after_atomic();
 		}
 		/* It is possible TX completion already happened
 		 * before we set TSQ_THROTTLED.
@@ -1317,7 +1316,7 @@ new_segment:
 			copy = size_goal;
 
 			/* All packets are restored as if they have
-			 * already been sent. skb_mstamp_ns isn't set to
+			 * already been sent. skb_mstamp isn't set to
 			 * avoid wrong rtt estimation.
 			 */
 			if (tp->repair)
@@ -1728,7 +1727,7 @@ int tcp_set_rcvlowat(struct sock *sk, int val)
 	else
 		cap = sock_net(sk)->ipv4.sysctl_tcp_rmem[2] >> 1;
 	val = min(val, cap);
-	WRITE_ONCE(sk->sk_rcvlowat, val ? : 1);
+	sk->sk_rcvlowat = val ? : 1;
 
 	/* Check if we need to signal EPOLLIN right now */
 	tcp_data_ready(sk);
@@ -1738,7 +1737,7 @@ int tcp_set_rcvlowat(struct sock *sk, int val)
 
 	val <<= 1;
 	if (val > sk->sk_rcvbuf) {
-		WRITE_ONCE(sk->sk_rcvbuf, val);
+		sk->sk_rcvbuf = val;
 		tcp_sk(sk)->window_clamp = tcp_win_from_space(sk, val);
 	}
 	return 0;
@@ -2507,8 +2506,6 @@ out:
 	bh_unlock_sock(sk);
 	local_bh_enable();
 	release_sock(sk);
-	if (!sk->sk_net_refcnt)
-		inet_csk_clear_xmit_timers_sync(sk);
 	sock_put(sk);
 }
 EXPORT_SYMBOL(tcp_close);
@@ -3149,9 +3146,8 @@ int tcp_setsockopt(struct sock *sk, int level, int optname, char __user *optval,
 	const struct inet_connection_sock *icsk = inet_csk(sk);
 
 	if (level != SOL_TCP)
-		/* Paired with WRITE_ONCE() in do_ipv6_setsockopt() and tcp_v6_connect() */
-		return READ_ONCE(icsk->icsk_af_ops)->setsockopt(sk, level, optname,
-								optval, optlen);
+		return icsk->icsk_af_ops->setsockopt(sk, level, optname,
+						     optval, optlen);
 	return do_tcp_setsockopt(sk, level, optname, optval, optlen);
 }
 EXPORT_SYMBOL(tcp_setsockopt);
@@ -3192,10 +3188,10 @@ void tcp_get_info(struct sock *sk, struct tcp_info *info)
 {
 	const struct tcp_sock *tp = tcp_sk(sk); /* iff sk_type == SOCK_STREAM */
 	const struct inet_connection_sock *icsk = inet_csk(sk);
-	unsigned long rate;
 	u32 now;
 	u64 rate64;
 	bool slow;
+	u32 rate;
 
 	memset(info, 0, sizeof(*info));
 	if (sk->sk_type != SOCK_STREAM)
@@ -3205,11 +3201,11 @@ void tcp_get_info(struct sock *sk, struct tcp_info *info)
 
 	/* Report meaningful fields for all TCP states, including listeners */
 	rate = READ_ONCE(sk->sk_pacing_rate);
-	rate64 = (rate != ~0UL) ? rate : ~0ULL;
+	rate64 = rate != ~0U ? rate : ~0ULL;
 	info->tcpi_pacing_rate = rate64;
 
 	rate = READ_ONCE(sk->sk_max_pacing_rate);
-	rate64 = (rate != ~0UL) ? rate : ~0ULL;
+	rate64 = rate != ~0U ? rate : ~0ULL;
 	info->tcpi_max_pacing_rate = rate64;
 
 	info->tcpi_reordering = tp->reordering;
@@ -3335,8 +3331,8 @@ struct sk_buff *tcp_get_timestamping_opt_stats(const struct sock *sk)
 	const struct tcp_sock *tp = tcp_sk(sk);
 	struct sk_buff *stats;
 	struct tcp_info info;
-	unsigned long rate;
 	u64 rate64;
+	u32 rate;
 
 	stats = alloc_skb(tcp_opt_stats_get_size(), GFP_ATOMIC);
 	if (!stats)
@@ -3355,7 +3351,7 @@ struct sk_buff *tcp_get_timestamping_opt_stats(const struct sock *sk)
 			  tp->total_retrans, TCP_NLA_PAD);
 
 	rate = READ_ONCE(sk->sk_pacing_rate);
-	rate64 = (rate != ~0UL) ? rate : ~0ULL;
+	rate64 = rate != ~0U ? rate : ~0ULL;
 	nla_put_u64_64bit(stats, TCP_NLA_PACING_RATE, rate64, TCP_NLA_PAD);
 
 	rate64 = tcp_compute_delivery_rate(tp);
@@ -3672,9 +3668,8 @@ int tcp_getsockopt(struct sock *sk, int level, int optname, char __user *optval,
 	struct inet_connection_sock *icsk = inet_csk(sk);
 
 	if (level != SOL_TCP)
-		/* Paired with WRITE_ONCE() in do_ipv6_setsockopt() and tcp_v6_connect() */
-		return READ_ONCE(icsk->icsk_af_ops)->getsockopt(sk, level, optname,
-								optval, optlen);
+		return icsk->icsk_af_ops->getsockopt(sk, level, optname,
+						     optval, optlen);
 	return do_tcp_getsockopt(sk, level, optname, optval, optlen);
 }
 EXPORT_SYMBOL(tcp_getsockopt);
