@@ -816,6 +816,7 @@ static void *prog_fd_array_get_ptr(struct bpf_map *map,
 
 static void prog_fd_array_put_ptr(void *ptr)
 {
+	/* bpf_prog is freed after one RCU or tasks trace grace period */
 	bpf_prog_put(ptr);
 }
 
@@ -1144,6 +1145,7 @@ err_out:
 
 static void perf_event_fd_array_put_ptr(void *ptr)
 {
+	/* bpf_perf_event is freed after one RCU grace period */
 	bpf_event_entry_free_rcu(ptr);
 }
 
