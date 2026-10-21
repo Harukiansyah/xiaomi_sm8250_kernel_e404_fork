@@ -3276,7 +3276,8 @@ static int should_skip_vma(unsigned long start, unsigned long end, struct mm_wal
 	struct lru_gen_mm_walk *priv = walk->private;
 
 	if (!(vma->vm_flags & (VM_READ | VM_EXEC | VM_WRITE)) || is_vm_hugetlb_page(vma) ||
-	    (vma->vm_flags & (VM_LOCKED | VM_SPECIAL | VM_SEQ_READ | VM_RAND_READ)) ||
+	    (vma->vm_flags & (VM_LOCKED | VM_SPECIAL)) ||
+	    !vma_has_recency(vma) ||
 	    vma == get_gate_vma(vma->vm_mm))
 		return true;
 
@@ -4671,8 +4672,6 @@ static long get_nr_to_scan(struct lruvec *lruvec, struct scan_control *sc,
 	 * medium-high usage. Leave aging to kswapd, only evict
 	 * already-aged generations here.
 	 */
-	goto done;
-
 done:
 	return min_seq[!can_swap] + MIN_NR_GENS <= max_seq ? nr_to_scan : 0;
 }
