@@ -4790,7 +4790,8 @@ static int _bpf_setsockopt(struct sock *sk, int level, int optname,
 			val = min_t(u32, val, sysctl_wmem_max);
 			val = min_t(int, val, INT_MAX / 2);
 			sk->sk_userlocks |= SOCK_SNDBUF_LOCK;
-			sk->sk_sndbuf = max_t(int, val * 2, SOCK_MIN_SNDBUF);
+			WRITE_ONCE(sk->sk_sndbuf,
+				   max_t(int, val * 2, SOCK_MIN_SNDBUF));
 			break;
 		case SO_MAX_PACING_RATE:
 			sk->sk_max_pacing_rate = val;
