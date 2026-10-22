@@ -258,7 +258,15 @@ static bool swap_sched_async_compress(struct page *page)
 		return false;
 
 	sis = page_swap_info(page);
-	if (!(data_race(sis->flags & SWP_SYNCHRONOUS_IO)))
+	/*
+	 * zram in 4.19 does not implement rw_page, so SWP_SYNCHRONOUS_IO is
+	 * never set for it even though its compression runs synchronously in
+	 * the submitting context. Detect zram by its swap_slot_free_notify
+	 * callback, which is the only in-kernel user of that hook.
+	 */
+	if (!(data_race(sis->flags & SWP_SYNCHRONOUS_IO)) &&
+	    !(sis->bdev && sis->bdev->bd_disk &&
+	      sis->bdev->bd_disk->fops->swap_slot_free_notify))
 		return false;
 
 	start_hid = (unsigned int)atomic_inc_return(&rr_cursor) %
