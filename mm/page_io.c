@@ -248,7 +248,8 @@ static bool swap_sched_async_compress(struct page *page)
 	struct swap_info_struct *sis;
 	pg_data_t *pgdat = NODE_DATA(nid);
 	static atomic_t rr_cursor = ATOMIC_INIT(0);
-	int start_hid, i, hid;
+	unsigned int start_hid, i;
+	int hid;
 
 	if (!current_is_kswapd())
 		return false;
@@ -260,7 +261,8 @@ static bool swap_sched_async_compress(struct page *page)
 	if (!(data_race(sis->flags & SWP_SYNCHRONOUS_IO)))
 		return false;
 
-	start_hid = atomic_inc_return(&rr_cursor) % MAX_KCOMPRESSD_THREADS;
+	start_hid = (unsigned int)atomic_inc_return(&rr_cursor) %
+		    MAX_KCOMPRESSD_THREADS;
 	for (i = 0; i < MAX_KCOMPRESSD_THREADS; i++) {
 		hid = (start_hid + i) % MAX_KCOMPRESSD_THREADS;
 		if (unlikely(!pgdat->kcompressd[hid]))
